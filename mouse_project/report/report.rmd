@@ -1,0 +1,270 @@
+---
+title: "Mouse project"
+author: 'Dmitrii Podgalo'
+date: "06/01/2022"
+output:
+  html_document: 
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+if (!require('kernlab')) {
+    install.packages('kernlab', repos = 'http://cran.us.r-project.org', )
+}
+if (!require('gdata')) {
+    install.packages('gdata', repos = 'http://cran.us.r-project.org', )
+}
+if (!require('kableExtra')) {
+    install.packages('kableExtra', repos = 'http://cran.us.r-project.org', )
+}
+if (!require('plyr')) {
+    install.packages('plyr', repos = 'http://cran.us.r-project.org', )
+}
+if (!require('gplots')) {
+    install.packages('gplots', repos = 'http://cran.us.r-project.org', )
+}
+
+library(vegan)
+library(kernlab)
+library(gdata)
+library(dplyr)
+library(kableExtra)
+library(ggplot2)
+library(plyr)
+library(plotly)
+library(limma)
+library(Biobase)
+library(gplots)
+
+options(scipen = 0, digits = 3)
+knitr::opts_chunk$set(message = F, warning = F, highlight = TRUE)
+```
+
+## Load Data and EDA
+```{r}
+df <- read.xls('../data/Data_Cortex_Nuclear.xls')
+df <- df %>% 
+  mutate(Genotype = factor(Genotype), Treatment = factor(Treatment), 
+         Behavior = factor(Behavior), class = factor(class))
+```
+
+
+## Description
+- In this dataset is `r length(unique(df$MouseID))` mice 
+
+- We can group mice by:
+  * genotype: `r levels(df$Genotype)`
+  * treatment: `r levels(df$Treatment)`
+  * behavior: `r levels(df$Behavior)`
+  * class: `r levels(df$class)`
+
+- Balance of these groups:
+
+```{r, echo=FALSE}
+nmice = length(unique(df$MouseID))
+
+df %>% 
+  group_by(Genotype) %>% 
+  dplyr::summarise(Balance = n() / nmice) %>% 
+  kbl() %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+```{r, echo=FALSE}
+df %>% 
+  group_by(Treatment) %>% 
+  dplyr::summarise(Balance = n() / nmice) %>% 
+  kbl() %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+```{r, echo=FALSE}
+df %>% 
+  group_by(Behavior) %>% 
+  dplyr::summarise(Balance = n() / nmice) %>% 
+  kbl() %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+```{r, echo=FALSE}
+df %>% 
+  group_by(class) %>% 
+  dplyr::summarise(Balance = n() / nmice) %>% 
+  kbl() %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+- Complete observations:
+
+`r nrow(na.omit(df))` observations is fully complete. If we want to know complete observations by each feature:
+```{r}
+colSums(!is.na(df))
+```
+
+## BDNF_N difference
+```{r}
+data_summary <- function(data, varname, groupnames){
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE))
+  }
+  data_sum <- plyr::ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- plyr::rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+dff <- data_summary(df, 'BDNF_N', 'class')
+ggplot(dff, aes(class, BDNF_N)) +
+  geom_line() +
+  geom_pointrange(aes(ymin=BDNF_N-sd, ymax=BDNF_N+sd)) +
+  ggtitle('BDNF_N expression by group')
+```
+
+```{r}
+aov_test <- summary(aov(BDNF_N ~ class, df))
+```
+BDNF_N expression significantly depends on class (F = `r aov_test[[1]]$'F value'[1]`, p value = `r aov_test[[1]]$'Pr(>F)'[1]`, df 1 = `r aov_test[[1]]$Df[1]`, df 2 = `r aov_test[[1]]$Df[2]`).
+
+## ERBB4_N linear model
+```{r}
+proteins <- df %>% 
+              na.omit() %>% 
+              select(where(is.numeric))
+fit_full <- lm(ERBB4_N ~ ., proteins)
+fit_null <- lm(ERBB4_N ~ 1, proteins)
+scope = list(lower = fit_null, upper = fit_full)
+optimal_fit <- step(fit_null, scope = scope, direction = "forward", trace = FALSE)
+lm_summary <- summary(optimal_fit)
+lm_summary
+```
+
+
+Adjusted R-squared is `r lm_summary$adj.r.squared`, df is `r lm_summary$df[2]` with `r lm_summary$df[1]` predictors. So, this is a just good model, but not excellent.
+
+Let's compare full model and optimal model:
+```{r}
+anova(fit_full, optimal_fit)
+```
+p value is `r anova(fit_full, optimal_fit)$'Pr(>F)'[2]`. This mean that optimal model and full model have not difference then optimal model is better than the full one.
+
+## PCA
+
+```{r}
+proteins_pca <- rda(proteins, scale = TRUE)
+```
+
+- Biplot with symmetric scaling:
+```{r}
+biplot(proteins_pca)
+```
+
+- Biplot of correlations:
+```{r}
+biplot(proteins_pca, scaling = "species", display = "species")
+```
+
+- Biplot of distances:
+```{r}
+biplot(proteins_pca, scaling = "sites", display = "sites")
+```
+
+```{r}
+pca_summary <- summary(proteins_pca)
+pca_result <- as.data.frame(pca_summary$cont)
+plot_data <- as.data.frame(t(pca_result[c("Proportion Explained"),][1:24]))
+plot_data$Component <- seq(1:nrow(plot_data))
+
+ggplot(plot_data, aes(Component, `Proportion Explained`)) + 
+  geom_bar(stat = "identity") + 
+  scale_x_discrete(limits = seq(1:nrow(plot_data))) +
+  ylab('Proportion Explained (95 %)') +
+  xlab('Principal Component') +
+  theme_bw() +
+  ggtitle('Proportion Explained by Principal Component')
+```
+
+```{r}
+plot_data <- as.data.frame(pca_summary$sites[,1:3])
+plot_ly(x = plot_data$PC1, 
+        y = plot_data$PC2, 
+        z = plot_data$PC3, 
+        type = "scatter3d", 
+        mode = "markers") %>% 
+  layout(title = 'PCA 3D')
+```
+
+## Differential expression
+
+Form **ExpressionSet**:
+```{r}
+proteins_dif <- df %>% 
+  select(where(is.numeric))
+proteins_dif <- normalizeQuantiles(log2(proteins_dif + 1))
+row.names(proteins_dif) <- df$MouseID
+
+factor_dif <- df['Genotype']
+
+expr_data <- as.matrix(t(proteins_dif))
+
+pheno_data <- df['Genotype']
+row.names(pheno_data) <- df$MouseID
+pheno_metadata <- data.frame(
+  labelDescription = c('Genotype'), 
+  row.names = c('Genotype'))
+pheno_data <- new("AnnotatedDataFrame", 
+                  data = pheno_data, 
+                  varMetadata = pheno_metadata)
+
+feature_data <- data.frame(Protein = rownames(expr_data))
+rownames(feature_data) <- rownames(expr_data)
+feature_metadata <- data.frame(
+  labelDescription = c("Protein"),
+  row.names = c("Protein"))
+f_data <- new("AnnotatedDataFrame", 
+              data = feature_data, 
+              varMetadata = feature_metadata)
+
+experiment_data <-
+  new("MIAME",
+      name = "Katheleen J. Gardiner",
+      lab = "lab",
+      contact = "katheleen.gardiner@ucdenver.edu",
+      title = "Down syndrome detectable signals in the nuclear fraction of cortex",
+      abstract = "Abstract",
+      other = list(notes = "Dataset from Katheleen J. Gardiner et al. 2015"))
+
+exp_set <-
+  ExpressionSet(assayData = expr_data,
+                phenoData = pheno_data,
+                featureData = f_data,
+                experimentData = experiment_data)
+```
+
+Linear model for **limma**:
+```{r}
+X <- model.matrix(~ Genotype, pData(exp_set))
+fit <- lmFit(exp_set, design = X, method = "robust", maxit = 1000)
+efit <- eBayes(fit)
+```
+
+All differential-expressed proteins table with a = 0.05:
+```{r}
+numGenes <- nrow(exprs(exp_set))
+topTable(efit, number = numGenes) %>% 
+  `rownames<-`(seq_len(numGenes)) %>% 
+  filter(adj.P.Val < 0.05)
+```
+
+Let's draw a heatmap:
+```{r, fig.cap='First 20 differential-expressed proteins in 1080 samples'}
+my_list <- topTable(efit, coef = 2, n = 20)
+dif_exp_set <- exp_set[fData(exp_set)$Protein %in% my_list$Protein, ]
+
+dat <- as.matrix(exprs(dif_exp_set))
+rownames(dat) <- fData(dif_exp_set)$Protein
+colnames(dat) <- NULL
+
+pal_green <- colorpanel(75, low = "black", mid = "darkgreen", high = "yellow")
+heatmap.2(dat, col = pal_green, scale = "none", key=TRUE, symkey = FALSE, density.info = "none", trace = "none", cexRow = 0.9, cexCol = 1, margins = c(1, 6), keysize = 1, key.par = list(mar = c(2, 1, 2, 1)), key.xlab = '')
+```
